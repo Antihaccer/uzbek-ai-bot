@@ -1,9 +1,12 @@
 import os
+import time
+import asyncio
 import logging
 from collections import defaultdict
 
 from groq import Groq
 from telegram import Update
+from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
@@ -48,6 +51,10 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Suhbat tarixi tozalandi. Yangidan boshlaymiz! 🔄")
 
 
+EDIT_INTERVAL = 0.6  # Telegram xabarini tahrirlash oralig'i (soniya)
+TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_text = update.message.text
@@ -60,20 +67,51 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
+    # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
+    sent_message = await update.message.reply_text("⏳")
+
+    full_text = ""
+    last_edit_time = 0.0
+
     try:
-        response = groq_client.chat.completions.create(
+        stream = groq_client.chat.completions.create(
             model=MODEL,
             messages=messages,
             temperature=0.7,
             max_tokens=800,
+            stream=True,
         )
-        answer = response.choices[0].message.content
+
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content or ""
+            if not delta:
+                continue
+            full_text += delta
+
+            now = time.monotonic()
+            if now - last_edit_time >= EDIT_INTERVAL:
+                last_edit_time = now
+                try:
+                    await sent_message.edit_text(full_text + TYPING_CURSOR)
+                except BadRequest:
+                    pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
+                # Telegram flood-limitiga tushib qolmaslik uchun kichik pauza
+                await asyncio.sleep(0.05)
+
+        if not full_text:
+            full_text = "Kechirasiz, javob bera olmadim. Qayta urinib ko'ring. 🙏"
+
     except Exception as e:
         logger.error(f"Groq xatosi: {e}")
-        answer = "Kechirasiz, hozir javob bera olmadim. Birozdan so'ng qayta urinib ko'ring. 🙏"
+        full_text = "Kechirasiz, hozir javob bera olmadim. Birozdan so'ng qayta urinib ko'ring. 🙏"
 
-    history.append({"role": "assistant", "content": answer})
-    await update.message.reply_text(answer)
+    # Yakuniy to'liq matnni (kursorsiz) yuboramiz
+    try:
+        await sent_message.edit_text(full_text)
+    except BadRequest:
+        pass
+
+    history.append({"role": "assistant", "content": full_text})
 
 
 def main():
