@@ -1,6 +1,5 @@
 import os
 import time
-import asyncio
 import logging
 from collections import defaultdict
 
@@ -51,7 +50,8 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Suhbat tarixi tozalandi. Yangidan boshlaymiz! 🔄")
 
 
-EDIT_INTERVAL = 0.6  # Telegram xabarini tahrirlash oralig'i (soniya)
+MIN_EDIT_INTERVAL = 0.12  # ikkita tahrirlash orasidagi eng kam vaqt (flood limitdan saqlanish uchun)
+CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
 TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
 
 
@@ -72,6 +72,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_text = ""
     last_edit_time = 0.0
+    last_edit_len = 0
 
     try:
         stream = groq_client.chat.completions.create(
@@ -89,14 +90,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             full_text += delta
 
             now = time.monotonic()
-            if now - last_edit_time >= EDIT_INTERVAL:
+            enough_time_passed = (now - last_edit_time) >= MIN_EDIT_INTERVAL
+            enough_new_chars = (len(full_text) - last_edit_len) >= CHAR_STEP
+
+            if enough_time_passed and enough_new_chars:
                 last_edit_time = now
+                last_edit_len = len(full_text)
                 try:
                     await sent_message.edit_text(full_text + TYPING_CURSOR)
                 except BadRequest:
                     pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
-                # Telegram flood-limitiga tushib qolmaslik uchun kichik pauza
-                await asyncio.sleep(0.05)
 
         if not full_text:
             full_text = "Kechirasiz, javob bera olmadim. Qayta urinib ko'ring. 🙏"
