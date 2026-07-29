@@ -4,13 +4,14 @@ import logging
 from collections import defaultdict
 
 from groq import Groq
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
     ContextTypes,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 
@@ -19,6 +20,9 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 MODEL = "llama-3.3-70b-versatile"  # Groq'dagi kuchli bepul model
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
+
+CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
+CHANNEL_URL = "https://t.me/FoydaliWebSahifalar"
 
 SYSTEM_PROMPT = (
     "Sen o'zbek tilida gaplashadigan foydali AI yordamchisan. "
@@ -36,7 +40,51 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 user_histories: dict[int, list[dict]] = defaultdict(list)
 
 
+def subscribe_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📢 Kanalga o'tish", url=CHANNEL_URL)],
+        [InlineKeyboardButton("✅ Tekshirish", callback_data="check_sub")],
+    ])
+
+
+async def is_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
+    try:
+        member = await context.bot.get_chat_member(chat_id=CHANNEL_USERNAME, user_id=user_id)
+        return member.status in ("member", "administrator", "creator")
+    except Exception as e:
+        logger.error(f"Obunani tekshirishda xatolik: {e}")
+        # Xatolik bo'lsa (masalan bot admin emas), foydalanuvchini bloklamaymiz
+        return True
+
+
+async def send_subscribe_prompt(update: Update):
+    await update.effective_message.reply_text(
+        "🚫 Botdan foydalanish uchun avval kanalimizga obuna bo'ling:\n\n"
+        f"{CHANNEL_URL}\n\n"
+        "Obuna bo'lgach, pastdagi \"✅ Tekshirish\" tugmasini bosing.",
+        reply_markup=subscribe_keyboard(),
+    )
+
+
+async def check_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+
+    if await is_subscribed(context, user_id):
+        await query.answer("Obuna tasdiqlandi! ✅")
+        await query.edit_message_text(
+            "Rahmat! Endi botdan bemalol foydalanishingiz mumkin. 🎉\n\n"
+            "Menga istalgan savolingizni yozing."
+        )
+    else:
+        await query.answer("Siz hali kanalga obuna bo'lmagansiz. ❌", show_alert=True)
+
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await is_subscribed(context, update.effective_user.id):
+        await send_subscribe_prompt(update)
+        return
+
     user_histories[update.effective_user.id] = []
     await update.message.reply_text(
         "Assalomu alaykum! 👋\n"
@@ -57,6 +105,11 @@ TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
+    if not await is_subscribed(context, user_id):
+        await send_subscribe_prompt(update)
+        return
+
     user_text = update.message.text
 
     history = user_histories[user_id]
@@ -122,6 +175,7 @@ def main():
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot ishga tushdi...")
