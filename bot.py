@@ -1,6 +1,8 @@
 import os
 import time
+import sqlite3
 import logging
+from datetime import date
 from collections import defaultdict
 
 from groq import Groq
@@ -24,6 +26,9 @@ MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
 CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
 CHANNEL_URL = "https://t.me/FoydaliWebSahifalar"
 
+ADMIN_ID = int(os.environ["ADMIN_ID"])  # statistika ko'ra oladigan admin Telegram ID'si
+DB_PATH = "stats.db"
+
 SYSTEM_PROMPT = (
     "Sen o'zbek tilida gaplashadigan foydali AI yordamchisan. "
     "Har doim o'zbek tilida, sodda va tushunarli tilda javob ber. "
@@ -38,6 +43,92 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 
 # Har bir foydalanuvchi uchun alohida suhbat tarixi (xotirada saqlanadi)
 user_histories: dict[int, list[dict]] = defaultdict(list)
+
+
+# ---------- STATISTIKA (SQLite) ----------
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_seen TEXT,
+            message_count INTEGER DEFAULT 0
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS daily_messages (
+            day TEXT,
+            user_id INTEGER,
+            count INTEGER DEFAULT 0,
+            PRIMARY KEY (day, user_id)
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def record_message(user_id: int, username: str | None):
+    today = date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO users (user_id, username, first_seen, message_count)
+        VALUES (?, ?, ?, 1)
+        ON CONFLICT(user_id) DO UPDATE SET
+            message_count = message_count + 1,
+            username = excluded.username
+        """,
+        (user_id, username, today),
+    )
+    conn.execute(
+        """
+        INSERT INTO daily_messages (day, user_id, count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(day, user_id) DO UPDATE SET count = count + 1
+        """,
+        (today, user_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_stats() -> str:
+    today = date.today().isoformat()
+    conn = sqlite3.connect(DB_PATH)
+    total_users = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    total_messages = conn.execute("SELECT COALESCE(SUM(message_count), 0) FROM users").fetchone()[0]
+    active_today = conn.execute(
+        "SELECT COUNT(DISTINCT user_id) FROM daily_messages WHERE day = ?", (today,)
+    ).fetchone()[0]
+    messages_today = conn.execute(
+        "SELECT COALESCE(SUM(count), 0) FROM daily_messages WHERE day = ?", (today,)
+    ).fetchone()[0]
+    new_today = conn.execute(
+        "SELECT COUNT(*) FROM users WHERE first_seen = ?", (today,)
+    ).fetchone()[0]
+    top_users = conn.execute(
+        "SELECT user_id, username, message_count FROM users ORDER BY message_count DESC LIMIT 5"
+    ).fetchall()
+    conn.close()
+
+    lines = [
+        "📊 *Bot statistikasi*",
+        "",
+        f"👥 Jami foydalanuvchilar: *{total_users}*",
+        f"✉️ Jami xabarlar: *{total_messages}*",
+        "",
+        f"📅 Bugun faol: *{active_today}*",
+        f"📅 Bugungi xabarlar: *{messages_today}*",
+        f"🆕 Bugun qo'shilgan yangi: *{new_today}*",
+        "",
+        "🏆 *Eng faol 5 foydalanuvchi:*",
+    ]
+    for i, (uid, uname, count) in enumerate(top_users, start=1):
+        name = f"@{uname}" if uname else f"ID:{uid}"
+        lines.append(f"{i}. {name} — {count} xabar")
+
+    return "\n".join(lines)
 
 
 def subscribe_keyboard() -> InlineKeyboardMarkup:
@@ -98,6 +189,12 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Suhbat tarixi tozalandi. Yangidan boshlaymiz! 🔄")
 
 
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return  # admin bo'lmagan foydalanuvchiga hech narsa demaymiz
+    await update.message.reply_text(get_stats(), parse_mode="Markdown")
+
+
 MIN_EDIT_INTERVAL = 0.12  # ikkita tahrirlash orasidagi eng kam vaqt (flood limitdan saqlanish uchun)
 CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
 TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
@@ -111,6 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     user_text = update.message.text
+    record_message(user_id, update.effective_user.username)
 
     history = user_histories[user_id]
     history.append({"role": "user", "content": user_text})
@@ -171,10 +269,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 def main():
+    init_db()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
