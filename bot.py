@@ -27,7 +27,7 @@ CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
 CHANNEL_URL = "https://t.me/FoydaliWebSahifalar"
 
 ADMIN_ID = int(os.environ["ADMIN_ID"])  # statistika ko'ra oladigan admin Telegram ID'si
-DB_PATH = "stats.db"
+DB_PATH = "/data/stats.db"  # Railway Volume orqali doimiy saqlanadi
 
 SYSTEM_PROMPT = (
     "Sen o'zbek tilida gaplashadigan foydali AI yordamchisan. "
@@ -47,6 +47,7 @@ user_histories: dict[int, list[dict]] = defaultdict(list)
 
 # ---------- STATISTIKA (SQLite) ----------
 def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
