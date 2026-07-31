@@ -26,7 +26,7 @@ MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
 CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
 CHANNEL_URL = "https://t.me/FoydaliWebSahifalar"
 
-ADMIN_ID = int(os.environ["ADMIN_ID"])  # statistika ko'ra oladigan admin Telegram ID'si
+ADMIN_ID = int(os.environ.get("ADMIN_ID", "7953346705"))  # statistika ko'ra oladigan admin Telegram ID'si
 DB_PATH = "/data/stats.db"  # Railway Volume orqali doimiy saqlanadi
 
 SYSTEM_PROMPT = (
