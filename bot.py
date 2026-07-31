@@ -319,7 +319,6 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    await update.message.reply_text(f"🎤 Siz aytdingiz: \"{recognized_text}\"")
     await stream_ai_reply(update, context, user_id, recognized_text)
 
 
