@@ -20,7 +20,7 @@ from telegram.ext import (
 # ---------- SOZLAMALAR ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-MODEL = "llama-3.3-70b-versatile"  # Groq'dagi kuchli bepul model
+MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun)
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
 
 CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
@@ -201,16 +201,8 @@ CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
 TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
 
 
-async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, user_text: str):
-    """Groq'ga so'rov yuboradi va javobni bosqichma-bosqich (streaming) ko'rsatadi."""
-    record_message(user_id, update.effective_user.username)
-
-    history = user_histories[user_id]
-    history.append({"role": "user", "content": user_text})
-    history[:] = history[-MAX_HISTORY:]  # tarixni cheklab turamiz
-
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
-
+async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE, messages: list[dict]) -> str:
+    """Berilgan messages ro'yxatini Groq'ga yuboradi va javobni bosqichma-bosqich Telegram'da ko'rsatadi."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
@@ -260,6 +252,19 @@ async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     except BadRequest:
         pass
 
+    return full_text
+
+
+async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, user_text: str):
+    """Matnli xabar uchun: suhbat tarixini hisobga olib javob beradi."""
+    record_message(user_id, update.effective_user.username)
+
+    history = user_histories[user_id]
+    history.append({"role": "user", "content": user_text})
+    history[:] = history[-MAX_HISTORY:]  # tarixni cheklab turamiz
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
+    full_text = await _stream_to_telegram(update, context, messages)
     history.append({"role": "assistant", "content": full_text})
 
 
@@ -322,6 +327,43 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await stream_ai_reply(update, context, user_id, recognized_text)
 
 
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not await is_subscribed(context, user_id):
+        await send_subscribe_prompt(update)
+        return
+
+    record_message(user_id, update.effective_user.username)
+
+    # Eng yuqori sifatli nusxasini olamiz
+    photo = update.message.photo[-1]
+    tg_file = await context.bot.get_file(photo.file_id)
+    image_url = tg_file.file_path  # Telegram to'liq havolani qaytaradi
+
+    caption = (update.message.caption or "").strip()
+    question = caption if caption else "Bu rasmda nima ko'rsatilgan? Batafsil, o'zbek tilida tushuntirib ber."
+
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        },
+    ]
+
+    full_text = await _stream_to_telegram(update, context, messages)
+
+    # Suhbat tarixiga qisqacha yozuv sifatida qo'shamiz (rasmning o'zini emas)
+    history = user_histories[user_id]
+    history.append({"role": "user", "content": f"[Rasm yubordi] {question}"})
+    history.append({"role": "assistant", "content": full_text})
+    history[:] = history[-MAX_HISTORY:]
+
+
 def main():
     init_db()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -331,6 +373,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot ishga tushdi...")
