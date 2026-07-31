@@ -289,12 +289,17 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await tg_file.download_to_drive(ogg_path)
 
     try:
+        first_name = update.effective_user.first_name or ""
+        hint_prompt = "Bu o'zbek tilidagi ovozli xabar."
+        if first_name:
+            hint_prompt += f" Gapiruvchining ismi: {first_name}."
+
         with open(ogg_path, "rb") as f:
             transcript = groq_client.audio.transcriptions.create(
                 file=(os.path.basename(ogg_path), f.read()),
                 model="whisper-large-v3",
                 language="uz",
-                prompt="Bu o'zbek tilidagi ovozli xabar.",
+                prompt=hint_prompt,
                 temperature=0,
             )
         recognized_text = transcript.text.strip()
