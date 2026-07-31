@@ -114,16 +114,16 @@ def get_stats() -> str:
     conn.close()
 
     lines = [
-        "📊 *Bot statistikasi*",
+        "📊 Bot statistikasi",
         "",
-        f"👥 Jami foydalanuvchilar: *{total_users}*",
-        f"✉️ Jami xabarlar: *{total_messages}*",
+        f"👥 Jami foydalanuvchilar: {total_users}",
+        f"✉️ Jami xabarlar: {total_messages}",
         "",
-        f"📅 Bugun faol: *{active_today}*",
-        f"📅 Bugungi xabarlar: *{messages_today}*",
-        f"🆕 Bugun qo'shilgan yangi: *{new_today}*",
+        f"📅 Bugun faol: {active_today}",
+        f"📅 Bugungi xabarlar: {messages_today}",
+        f"🆕 Bugun qo'shilgan yangi: {new_today}",
         "",
-        "🏆 *Eng faol 5 foydalanuvchi:*",
+        "🏆 Eng faol 5 foydalanuvchi:",
     ]
     for i, (uid, uname, count) in enumerate(top_users, start=1):
         name = f"@{uname}" if uname else f"ID:{uid}"
@@ -193,7 +193,7 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
         return  # admin bo'lmagan foydalanuvchiga hech narsa demaymiz
-    await update.message.reply_text(get_stats(), parse_mode="Markdown")
+    await update.message.reply_text(get_stats())
 
 
 MIN_EDIT_INTERVAL = 0.12  # ikkita tahrirlash orasidagi eng kam vaqt (flood limitdan saqlanish uchun)
