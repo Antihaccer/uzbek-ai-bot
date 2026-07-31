@@ -201,14 +201,8 @@ CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
 TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
 
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-
-    if not await is_subscribed(context, user_id):
-        await send_subscribe_prompt(update)
-        return
-
-    user_text = update.message.text
+async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, user_text: str):
+    """Groq'ga so'rov yuboradi va javobni bosqichma-bosqich (streaming) ko'rsatadi."""
     record_message(user_id, update.effective_user.username)
 
     history = user_histories[user_id]
@@ -220,7 +214,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
-    sent_message = await update.message.reply_text("⏳")
+    sent_message = await update.effective_message.reply_text("⏳")
 
     full_text = ""
     last_edit_time = 0.0
@@ -269,6 +263,59 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "assistant", "content": full_text})
 
 
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not await is_subscribed(context, user_id):
+        await send_subscribe_prompt(update)
+        return
+
+    await stream_ai_reply(update, context, user_id, update.message.text)
+
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not await is_subscribed(context, user_id):
+        await send_subscribe_prompt(update)
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+
+    voice = update.message.voice or update.message.audio
+    tg_file = await context.bot.get_file(voice.file_id)
+
+    ogg_path = f"/tmp/voice_{user_id}_{int(time.time())}.ogg"
+    await tg_file.download_to_drive(ogg_path)
+
+    try:
+        with open(ogg_path, "rb") as f:
+            transcript = groq_client.audio.transcriptions.create(
+                file=(os.path.basename(ogg_path), f.read()),
+                model="whisper-large-v3-turbo",
+                language="uz",
+            )
+        recognized_text = transcript.text.strip()
+    except Exception as e:
+        logger.error(f"Whisper xatosi: {e}")
+        await update.message.reply_text(
+            "Kechirasiz, ovozli xabarni tushuna olmadim. Matn bilan yozib ko'ring. 🙏"
+        )
+        return
+    finally:
+        if os.path.exists(ogg_path):
+            os.remove(ogg_path)
+
+    if not recognized_text:
+        await update.message.reply_text(
+            "Ovozli xabarni tushuna olmadim, iltimos qayta urinib ko'ring yoki matn yozing. 🙏"
+        )
+        return
+
+    await update.message.reply_text(f"🎤 Siz aytdingiz: \"{recognized_text}\"")
+    await stream_ai_reply(update, context, user_id, recognized_text)
+
+
 def main():
     init_db()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -277,6 +324,7 @@ def main():
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
+    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     logger.info("Bot ishga tushdi...")
