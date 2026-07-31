@@ -292,8 +292,10 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         with open(ogg_path, "rb") as f:
             transcript = groq_client.audio.transcriptions.create(
                 file=(os.path.basename(ogg_path), f.read()),
-                model="whisper-large-v3-turbo",
+                model="whisper-large-v3",
                 language="uz",
+                prompt="Bu o'zbek tilidagi ovozli xabar.",
+                temperature=0,
             )
         recognized_text = transcript.text.strip()
     except Exception as e:
