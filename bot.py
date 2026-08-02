@@ -447,7 +447,10 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
     enhanced_prompt = enhance_image_prompt(prompt)
-    image_url = f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}?width=1024&height=1024&nologo=true"
+    image_url = (
+        f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}"
+        f"?width=1024&height=1024&model=flux&enhance=true&nologo=true"
+    )
 
     try:
         async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
