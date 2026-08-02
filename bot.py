@@ -386,7 +386,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history[:] = history[-MAX_HISTORY:]
 
 
-IMAGE_GEN_TIMEOUT = 120.0  # kattaroq rasm generatsiyasi ko'proq vaqt olishi mumkin
+IMAGE_GEN_TIMEOUT = 180.0  # yuqori sifatli katta rasm uchun 2-3 daqiqagacha kutamiz
 
 
 def enhance_image_prompt(user_prompt: str) -> str:
@@ -443,13 +443,15 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     record_message(user_id, update.effective_user.username)
 
-    status_message = await update.message.reply_text("🎨 Rasm chizilmoqda, biroz kuting...")
+    status_message = await update.message.reply_text(
+        "🎨 Yuqori sifatli rasm chizilmoqda, bu 1-2 daqiqa vaqt olishi mumkin..."
+    )
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
     enhanced_prompt = enhance_image_prompt(prompt)
     image_url = (
         f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}"
-        f"?width=1536&height=1536&model=flux&enhance=true&nologo=true"
+        f"?width=2048&height=2048&model=flux&enhance=true&nologo=true"
     )
 
     try:
