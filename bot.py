@@ -386,7 +386,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history[:] = history[-MAX_HISTORY:]
 
 
-IMAGE_GEN_TIMEOUT = 90.0  # rasm generatsiyasi biroz vaqt olishi mumkin
+IMAGE_GEN_TIMEOUT = 120.0  # kattaroq rasm generatsiyasi ko'proq vaqt olishi mumkin
 
 
 def enhance_image_prompt(user_prompt: str) -> str:
@@ -449,7 +449,7 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     enhanced_prompt = enhance_image_prompt(prompt)
     image_url = (
         f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}"
-        f"?width=1024&height=1024&model=flux&enhance=true&nologo=true"
+        f"?width=1536&height=1536&model=flux&enhance=true&nologo=true"
     )
 
     try:
