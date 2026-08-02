@@ -400,9 +400,15 @@ def enhance_image_prompt(user_prompt: str) -> str:
                     "role": "system",
                     "content": (
                         "You convert short user requests (possibly in Uzbek) into a single, "
-                        "vivid, detailed English prompt for an AI image generator. "
-                        "Add useful visual details: style, lighting, composition, mood. "
-                        "Respond with ONLY the final English prompt, nothing else — "
+                        "detailed English prompt for an AI image generator.\n\n"
+                        "STRICT RULES:\n"
+                        "- Keep EXACTLY the subjects and scene the user described — do not add "
+                        "new objects, characters, props, or scene elements that weren't mentioned "
+                        "or clearly implied.\n"
+                        "- You may ONLY add: art style, lighting, color mood, camera framing, and "
+                        "quality descriptors (e.g. 'high detail', 'soft lighting', 'digital art').\n"
+                        "- Do not reinterpret or embellish the scene creatively — stay literal.\n"
+                        "- Respond with ONLY the final English prompt, nothing else — "
                         "no explanations, no quotes, no extra text."
                     ),
                 },
