@@ -1,8 +1,11 @@
 import os
 import re
 import time
+import httpx
 import sqlite3
 import logging
+from io import BytesIO
+from urllib.parse import quote
 from datetime import date
 from collections import defaultdict
 
@@ -182,6 +185,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Assalomu alaykum! 👋\n"
         "Men sizning AI yordamchingizman. Menga istalgan savolingizni yozing.\n\n"
+        "🎤 Ovozli xabar yuborishingiz ham mumkin\n"
+        "🖼️ Rasm yuborsangiz, uni tavsiflab beraman\n"
+        "🎨 /rasm <tavsif> — rasm chizib beraman\n"
         "/reset — suhbatni tozalash uchun."
     )
 
@@ -380,6 +386,54 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history[:] = history[-MAX_HISTORY:]
 
 
+IMAGE_GEN_TIMEOUT = 90.0  # rasm generatsiyasi biroz vaqt olishi mumkin
+
+
+async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+
+    if not await is_subscribed(context, user_id):
+        await send_subscribe_prompt(update)
+        return
+
+    prompt = " ".join(context.args).strip() if context.args else ""
+    if not prompt:
+        await update.message.reply_text(
+            "🎨 Rasm yaratish uchun tavsif yozing.\n\n"
+            "Masalan: /rasm qor bosgan tog'lar orasidagi kichik uy"
+        )
+        return
+
+    record_message(user_id, update.effective_user.username)
+
+    status_message = await update.message.reply_text("🎨 Rasm chizilmoqda, biroz kuting...")
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
+
+    image_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&nologo=true"
+
+    try:
+        async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+            image_bytes = response.content
+
+        await context.bot.send_photo(
+            chat_id=update.effective_chat.id,
+            photo=BytesIO(image_bytes),
+            caption=f"🎨 {prompt}",
+        )
+        await status_message.delete()
+
+    except Exception as e:
+        logger.error(f"Rasm yaratishda xatolik: {e}")
+        try:
+            await status_message.edit_text(
+                "Kechirasiz, rasm yaratib bo'lmadi. Birozdan so'ng qayta urinib ko'ring. 🙏"
+            )
+        except BadRequest:
+            pass
+
+
 def main():
     init_db()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -387,6 +441,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
     app.add_handler(CommandHandler("stats", stats))
+    app.add_handler(CommandHandler("rasm", generate_image))
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
