@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import sqlite3
 import logging
@@ -200,6 +201,18 @@ MIN_EDIT_INTERVAL = 0.12  # ikkita tahrirlash orasidagi eng kam vaqt (flood limi
 CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
 TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
 
+THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+
+
+def strip_thinking(raw: str) -> str:
+    """Modelning ichki 'fikrlash' (<think>...</think>) qismini foydalanuvchiga ko'rsatmaslik uchun olib tashlaydi."""
+    cleaned = THINK_RE.sub("", raw)
+    # Agar hali yopilmagan <think> tegi bo'lsa (stream davom etayotganda), o'sha joygacha kesib tashlaymiz
+    idx = cleaned.find("<think>")
+    if idx != -1:
+        cleaned = cleaned[:idx]
+    return cleaned.strip()
+
 
 async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE, messages: list[dict]) -> str:
     """Berilgan messages ro'yxatini Groq'ga yuboradi va javobni bosqichma-bosqich Telegram'da ko'rsatadi."""
@@ -208,7 +221,7 @@ async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
     sent_message = await update.effective_message.reply_text("⏳")
 
-    full_text = ""
+    raw_text = ""
     last_edit_time = 0.0
     last_edit_len = 0
 
@@ -219,26 +232,29 @@ async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE
             temperature=0.7,
             max_tokens=800,
             stream=True,
+            reasoning_effort="none",  # "fikrlash" rejimini o'chiramiz — tezkor, toza javob uchun
         )
 
         for chunk in stream:
             delta = chunk.choices[0].delta.content or ""
             if not delta:
                 continue
-            full_text += delta
+            raw_text += delta
+            display_text = strip_thinking(raw_text)
 
             now = time.monotonic()
             enough_time_passed = (now - last_edit_time) >= MIN_EDIT_INTERVAL
-            enough_new_chars = (len(full_text) - last_edit_len) >= CHAR_STEP
+            enough_new_chars = (len(display_text) - last_edit_len) >= CHAR_STEP
 
-            if enough_time_passed and enough_new_chars:
+            if enough_time_passed and enough_new_chars and display_text:
                 last_edit_time = now
-                last_edit_len = len(full_text)
+                last_edit_len = len(display_text)
                 try:
-                    await sent_message.edit_text(full_text + TYPING_CURSOR)
+                    await sent_message.edit_text(display_text + TYPING_CURSOR)
                 except BadRequest:
                     pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
 
+        full_text = strip_thinking(raw_text)
         if not full_text:
             full_text = "Kechirasiz, javob bera olmadim. Qayta urinib ko'ring. 🙏"
 
