@@ -389,6 +389,37 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 IMAGE_GEN_TIMEOUT = 90.0  # rasm generatsiyasi biroz vaqt olishi mumkin
 
 
+def enhance_image_prompt(user_prompt: str) -> str:
+    """Foydalanuvchining (o'zbekcha) qisqa tavsifini AI orqali batafsil, aniq inglizcha
+    rasm-generatsiya promptiga aylantiradi. Xatolik bo'lsa, asl matnni qaytaradi."""
+    try:
+        response = groq_client.chat.completions.create(
+            model=MODEL,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You convert short user requests (possibly in Uzbek) into a single, "
+                        "vivid, detailed English prompt for an AI image generator. "
+                        "Add useful visual details: style, lighting, composition, mood. "
+                        "Respond with ONLY the final English prompt, nothing else — "
+                        "no explanations, no quotes, no extra text."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.8,
+            max_tokens=200,
+            reasoning_effort="none",
+        )
+        enhanced = response.choices[0].message.content or ""
+        enhanced = strip_thinking(enhanced).strip()
+        return enhanced if enhanced else user_prompt
+    except Exception as e:
+        logger.error(f"Promptni yaxshilashda xatolik: {e}")
+        return user_prompt
+
+
 async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
 
@@ -409,7 +440,8 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_message = await update.message.reply_text("🎨 Rasm chizilmoqda, biroz kuting...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
-    image_url = f"https://image.pollinations.ai/prompt/{quote(prompt)}?width=1024&height=1024&nologo=true"
+    enhanced_prompt = enhance_image_prompt(prompt)
+    image_url = f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}?width=1024&height=1024&nologo=true"
 
     try:
         async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
