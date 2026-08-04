@@ -2,10 +2,10 @@ import os
 import re
 import time
 import httpx
+import base64
 import sqlite3
 import logging
 from io import BytesIO
-from urllib.parse import quote
 from datetime import date
 from collections import defaultdict
 
@@ -32,6 +32,10 @@ CHANNEL_URL = "https://t.me/FoydaliWebSahifalar"
 
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "7953346705"))  # statistika ko'ra oladigan admin Telegram ID'si
 DB_PATH = "/data/stats.db"  # Railway Volume orqali doimiy saqlanadi
+
+CLOUDFLARE_ACCOUNT_ID = os.environ["CLOUDFLARE_ACCOUNT_ID"]
+CLOUDFLARE_API_TOKEN = os.environ["CLOUDFLARE_API_TOKEN"]
+CF_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
 SYSTEM_PROMPT = (
     "Sen o'zbek tilida gaplashadigan foydali AI yordamchisan. "
@@ -386,7 +390,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history[:] = history[-MAX_HISTORY:]
 
 
-IMAGE_GEN_TIMEOUT = 180.0  # yuqori sifatli katta rasm uchun 2-3 daqiqagacha kutamiz
+IMAGE_GEN_TIMEOUT = 60.0  # Cloudflare Workers AI odatda tez ishlaydi
 
 
 def enhance_image_prompt(user_prompt: str) -> str:
@@ -443,22 +447,26 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     record_message(user_id, update.effective_user.username)
 
-    status_message = await update.message.reply_text(
-        "🎨 Yuqori sifatli rasm chizilmoqda, bu 1-2 daqiqa vaqt olishi mumkin..."
-    )
+    status_message = await update.message.reply_text("🎨 Rasm chizilmoqda, biroz kuting...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
     enhanced_prompt = enhance_image_prompt(prompt)
-    image_url = (
-        f"https://image.pollinations.ai/prompt/{quote(enhanced_prompt)}"
-        f"?width=2048&height=2048&model=flux&enhance=true&nologo=true"
-    )
+    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}"
 
     try:
         async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
-            response = await client.get(image_url)
+            response = await client.post(
+                cf_url,
+                headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
+                json={"prompt": enhanced_prompt, "steps": 8},
+            )
             response.raise_for_status()
-            image_bytes = response.content
+            data = response.json()
+
+        if not data.get("success"):
+            raise RuntimeError(f"Cloudflare xatosi: {data.get('errors')}")
+
+        image_bytes = base64.b64decode(data["result"]["image"])
 
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
