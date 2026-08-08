@@ -29,7 +29,7 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun) — Groq (zaxira)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash"  # bepul tarifda kuniga 1500 so'rovgacha — asosiy model
+GEMINI_MODEL = "gemini-2.5-flash-lite"  # bepul tarifda kuniga 1000 so'rovgacha — asosiy model
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
@@ -366,11 +366,12 @@ async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         except Exception as e:
             error_text = str(e).lower()
-            is_quota_error = any(k in error_text for k in ["429", "quota", "rate limit", "resource_exhausted"])
 
-            if provider_name == "gemini" and is_quota_error:
+            if provider_name == "gemini":
+                # Har qanday sababdan (limit, model xatosi va h.k.) Gemini ishlamasa,
+                # bugungi kun uchun uni chetlab, to'g'ridan-to'g'ri Groq'ga o'tamiz
                 mark_gemini_exhausted()
-                logger.info("Gemini limiti tugadi, Groq'ga o'tilyapti...")
+                logger.info(f"Gemini ishlamadi ({e}), Groq'ga o'tilyapti...")
                 continue  # keyingi provayderni (Groq) sinaymiz
 
             logger.error(f"{provider_name} xatosi: {e}")
