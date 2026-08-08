@@ -361,6 +361,7 @@ async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE
             if not full_text:
                 raise RuntimeError("Bo'sh javob qaytdi")
 
+            logger.info(f"✅ Javob '{provider_name}' orqali berildi.")
             break  # muvaffaqiyatli — boshqa provayderni sinashning hojati yo'q
 
         except Exception as e:
