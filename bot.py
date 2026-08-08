@@ -10,7 +10,7 @@ from datetime import date
 from collections import defaultdict
 
 from groq import Groq
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
@@ -494,9 +494,18 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 
+async def setup_commands(app):
+    """Telegram'ning '/' menyusida ko'rinadigan buyruqlar ro'yxatini sozlaydi."""
+    await app.bot.set_my_commands([
+        BotCommand("start", "Botni ishga tushirish"),
+        BotCommand("reset", "Suhbat tarixini tozalash"),
+        BotCommand("rasm", "AI orqali rasm chizish"),
+    ])
+
+
 def main():
     init_db()
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(setup_commands).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
