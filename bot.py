@@ -119,6 +119,9 @@ def get_stats() -> str:
     top_users = conn.execute(
         "SELECT user_id, username, message_count FROM users ORDER BY message_count DESC LIMIT 5"
     ).fetchall()
+    newest_users = conn.execute(
+        "SELECT user_id, username, first_seen FROM users ORDER BY first_seen DESC, user_id DESC LIMIT 5"
+    ).fetchall()
     conn.close()
 
     lines = [
@@ -136,6 +139,12 @@ def get_stats() -> str:
     for i, (uid, uname, count) in enumerate(top_users, start=1):
         name = f"@{uname}" if uname else f"ID:{uid}"
         lines.append(f"{i}. {name} — {count} xabar")
+
+    lines.append("")
+    lines.append("🆕 Yangi qo'shilgan 5 foydalanuvchi:")
+    for i, (uid, uname, first_seen) in enumerate(newest_users, start=1):
+        name = f"@{uname}" if uname else f"ID:{uid}"
+        lines.append(f"{i}. {name} — {first_seen}")
 
     return "\n".join(lines)
 
