@@ -1,6 +1,7 @@
 import os
 import re
 import time
+import json
 import httpx
 import base64
 import sqlite3
@@ -73,6 +74,50 @@ def init_db():
             PRIMARY KEY (day, user_id)
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_history (
+            user_id INTEGER PRIMARY KEY,
+            history TEXT
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def load_all_histories():
+    """Bot ishga tushganda, oldingi suhbat tarixlarini bazadan xotiraga yuklaydi."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute("SELECT user_id, history FROM conversation_history").fetchall()
+    conn.close()
+    for user_id, history_json in rows:
+        try:
+            user_histories[user_id] = json.loads(history_json)
+        except (json.JSONDecodeError, TypeError):
+            continue
+    if rows:
+        logger.info(f"{len(rows)} ta foydalanuvchi suhbat tarixi bazadan yuklandi.")
+
+
+def save_history(user_id: int):
+    """Foydalanuvchining suhbat tarixini bazaga yozadi (doimiy saqlash uchun)."""
+    history_json = json.dumps(user_histories[user_id], ensure_ascii=False)
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """
+        INSERT INTO conversation_history (user_id, history)
+        VALUES (?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET history = excluded.history
+        """,
+        (user_id, history_json),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_history(user_id: int):
+    """Foydalanuvchining suhbat tarixini bazadan o'chiradi (/reset uchun)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM conversation_history WHERE user_id = ?", (user_id,))
     conn.commit()
     conn.close()
 
@@ -194,7 +239,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_subscribe_prompt(update)
         return
 
-    user_histories[update.effective_user.id] = []
     await update.message.reply_text(
         "Assalomu alaykum! 👋\n"
         "Men sizning AI yordamchingizman. Menga istalgan savolingizni yozing.\n\n"
@@ -207,6 +251,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_histories[update.effective_user.id] = []
+    delete_history(update.effective_user.id)
     await update.message.reply_text("Suhbat tarixi tozalandi. Yangidan boshlaymiz! 🔄")
 
 
@@ -301,6 +346,7 @@ async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, us
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
     full_text = await _stream_to_telegram(update, context, messages)
     history.append({"role": "assistant", "content": full_text})
+    save_history(user_id)
 
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -397,6 +443,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     history.append({"role": "user", "content": f"[Rasm yubordi] {question}"})
     history.append({"role": "assistant", "content": full_text})
     history[:] = history[-MAX_HISTORY:]
+    save_history(user_id)
 
 
 IMAGE_GEN_TIMEOUT = 60.0  # Cloudflare Workers AI odatda tez ishlaydi
@@ -505,6 +552,7 @@ async def setup_commands(app):
 
 def main():
     init_db()
+    load_all_histories()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(setup_commands).build()
 
     app.add_handler(CommandHandler("start", start))
