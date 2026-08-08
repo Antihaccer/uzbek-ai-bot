@@ -11,6 +11,7 @@ from datetime import date
 from collections import defaultdict
 
 from groq import Groq
+from openai import OpenAI
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from telegram.error import BadRequest
 from telegram.ext import (
@@ -25,7 +26,12 @@ from telegram.ext import (
 # ---------- SOZLAMALAR ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun)
+MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun) — Groq (zaxira)
+
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_MODEL = "gemini-2.5-flash"  # bepul tarifda kuniga 1500 so'rovgacha — asosiy model
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
 
 CHANNEL_USERNAME = "@FoydaliWebSahifalar"  # majburiy obuna uchun kanal
@@ -49,6 +55,27 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 groq_client = Groq(api_key=GROQ_API_KEY)
+
+gemini_client = OpenAI(api_key=GEMINI_API_KEY, base_url=GEMINI_BASE_URL) if GEMINI_API_KEY else None
+_gemini_exhausted_date: str | None = None  # bugun Gemini limiti tugagan bo'lsa, shu yerda saqlanadi
+
+
+def gemini_is_available() -> bool:
+    """Gemini bugun hali limitga yetmaganmi, shuni tekshiradi."""
+    global _gemini_exhausted_date
+    if gemini_client is None:
+        return False
+    if _gemini_exhausted_date == date.today().isoformat():
+        return False
+    return True
+
+
+def mark_gemini_exhausted():
+    """Gemini limiti tugaganini belgilaydi — ertaga avtomatik qayta tiklanadi."""
+    global _gemini_exhausted_date
+    _gemini_exhausted_date = date.today().isoformat()
+    logger.warning("Gemini kunlik limiti tugadi — Groq'ga o'tildi.")
+
 
 # Har bir foydalanuvchi uchun alohida suhbat tarixi (xotirada saqlanadi)
 user_histories: dict[int, list[dict]] = defaultdict(list)
@@ -278,53 +305,77 @@ def strip_thinking(raw: str) -> str:
     return cleaned.strip()
 
 
+def _build_providers() -> list[tuple]:
+    """Sinab ko'riladigan provayderlar ro'yxati: (client, model, qo'shimcha_parametrlar, nomi)."""
+    providers = []
+    if gemini_is_available():
+        providers.append((gemini_client, GEMINI_MODEL, {}, "gemini"))
+    providers.append((groq_client, MODEL, {"reasoning_effort": "none"}, "groq"))
+    return providers
+
+
 async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE, messages: list[dict]) -> str:
-    """Berilgan messages ro'yxatini Groq'ga yuboradi va javobni bosqichma-bosqich Telegram'da ko'rsatadi."""
+    """Messages ro'yxatini AI'ga yuboradi (avval Gemini, limit tugasa Groq) va javobni bosqichma-bosqich ko'rsatadi."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
     sent_message = await update.effective_message.reply_text("⏳")
 
-    raw_text = ""
-    last_edit_time = 0.0
-    last_edit_len = 0
+    full_text = ""
+    providers = _build_providers()
 
-    try:
-        stream = groq_client.chat.completions.create(
-            model=MODEL,
-            messages=messages,
-            temperature=0.7,
-            max_tokens=800,
-            stream=True,
-            reasoning_effort="none",  # "fikrlash" rejimini o'chiramiz — tezkor, toza javob uchun
-        )
+    for client, model, extra_kwargs, provider_name in providers:
+        raw_text = ""
+        last_edit_time = 0.0
+        last_edit_len = 0
+        try:
+            stream = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.7,
+                max_tokens=800,
+                stream=True,
+                **extra_kwargs,
+            )
 
-        for chunk in stream:
-            delta = chunk.choices[0].delta.content or ""
-            if not delta:
-                continue
-            raw_text += delta
-            display_text = strip_thinking(raw_text)
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if not delta:
+                    continue
+                raw_text += delta
+                display_text = strip_thinking(raw_text)
 
-            now = time.monotonic()
-            enough_time_passed = (now - last_edit_time) >= MIN_EDIT_INTERVAL
-            enough_new_chars = (len(display_text) - last_edit_len) >= CHAR_STEP
+                now = time.monotonic()
+                enough_time_passed = (now - last_edit_time) >= MIN_EDIT_INTERVAL
+                enough_new_chars = (len(display_text) - last_edit_len) >= CHAR_STEP
 
-            if enough_time_passed and enough_new_chars and display_text:
-                last_edit_time = now
-                last_edit_len = len(display_text)
-                try:
-                    await sent_message.edit_text(display_text + TYPING_CURSOR)
-                except BadRequest:
-                    pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
+                if enough_time_passed and enough_new_chars and display_text:
+                    last_edit_time = now
+                    last_edit_len = len(display_text)
+                    try:
+                        await sent_message.edit_text(display_text + TYPING_CURSOR)
+                    except BadRequest:
+                        pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
 
-        full_text = strip_thinking(raw_text)
-        if not full_text:
-            full_text = "Kechirasiz, javob bera olmadim. Qayta urinib ko'ring. 🙏"
+            full_text = strip_thinking(raw_text)
+            if not full_text:
+                raise RuntimeError("Bo'sh javob qaytdi")
 
-    except Exception as e:
-        logger.error(f"Groq xatosi: {e}")
-        full_text = "Kechirasiz, hozir javob bera olmadim. Birozdan so'ng qayta urinib ko'ring. 🙏"
+            break  # muvaffaqiyatli — boshqa provayderni sinashning hojati yo'q
+
+        except Exception as e:
+            error_text = str(e).lower()
+            is_quota_error = any(k in error_text for k in ["429", "quota", "rate limit", "resource_exhausted"])
+
+            if provider_name == "gemini" and is_quota_error:
+                mark_gemini_exhausted()
+                logger.info("Gemini limiti tugadi, Groq'ga o'tilyapti...")
+                continue  # keyingi provayderni (Groq) sinaymiz
+
+            logger.error(f"{provider_name} xatosi: {e}")
+            if provider_name == providers[-1][3]:  # bu oxirgi (so'nggi) provayder edi
+                full_text = "Kechirasiz, hozir javob bera olmadim. Birozdan so'ng qayta urinib ko'ring. 🙏"
+            # aks holda keyingi provayderga o'tamiz
 
     # Yakuniy to'liq matnni (kursorsiz) yuboramiz
     try:
