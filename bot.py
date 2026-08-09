@@ -29,7 +29,7 @@ GROQ_API_KEY = os.environ["GROQ_API_KEY"]
 MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun) — Groq (zaxira)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-2.5-flash-lite"  # bepul tarifda kuniga 1000 so'rovgacha — asosiy model
+GEMINI_MODEL = "gemini-3.1-flash-lite"  # bepul tarifda, yangi API kalitlar uchun ochiq model
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
