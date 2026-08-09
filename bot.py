@@ -1,18 +1,13 @@
 import os
-import re
 import time
 import json
-import httpx
-import base64
 import sqlite3
 import logging
 from io import BytesIO
 from datetime import date
 from collections import defaultdict
 
-from groq import Groq
-from openai import OpenAI
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand, WebAppInfo, MenuButtonWebApp
 from telegram.error import BadRequest
 from telegram.ext import (
     ApplicationBuilder,
@@ -23,13 +18,15 @@ from telegram.ext import (
     filters,
 )
 
+from ai_core import AICore
+
 # ---------- SOZLAMALAR ----------
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GROQ_API_KEY = os.environ["GROQ_API_KEY"]
-MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model (llama-3.3-70b eskirgani uchun) — Groq (zaxira)
+MODEL = "qwen/qwen3.6-27b"  # matn va rasm bilan ishlaydigan yangi model — Groq (zaxira)
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_MODEL = "gemini-3.1-flash-lite"  # bepul tarifda, yangi API kalitlar uchun ochiq model
+GEMINI_MODEL = "gemini-3.1-flash-lite"  # bepul tarifda, yangi API kalitlar uchun ochiq model — asosiy
 GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 MAX_HISTORY = 10  # har bir foydalanuvchi uchun saqlanadigan xabarlar soni
@@ -44,6 +41,8 @@ CLOUDFLARE_ACCOUNT_ID = os.environ["CLOUDFLARE_ACCOUNT_ID"]
 CLOUDFLARE_API_TOKEN = os.environ["CLOUDFLARE_API_TOKEN"]
 CF_IMAGE_MODEL = "@cf/black-forest-labs/flux-1-schnell"
 
+MINI_APP_URL = os.environ.get("MINI_APP_URL", "")  # Railway domeni, masalan https://xxx.up.railway.app
+
 SYSTEM_PROMPT = (
     "Sen o'zbek tilida gaplashadigan foydali AI yordamchisan. "
     "Har doim o'zbek tilida, sodda va tushunarli tilda javob ber. "
@@ -54,28 +53,18 @@ SYSTEM_PROMPT = (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-groq_client = Groq(api_key=GROQ_API_KEY)
-
-gemini_client = OpenAI(api_key=GEMINI_API_KEY, base_url=GEMINI_BASE_URL) if GEMINI_API_KEY else None
-_gemini_exhausted_date: str | None = None  # bugun Gemini limiti tugagan bo'lsa, shu yerda saqlanadi
-
-
-def gemini_is_available() -> bool:
-    """Gemini bugun hali limitga yetmaganmi, shuni tekshiradi."""
-    global _gemini_exhausted_date
-    if gemini_client is None:
-        return False
-    if _gemini_exhausted_date == date.today().isoformat():
-        return False
-    return True
-
-
-def mark_gemini_exhausted():
-    """Gemini limiti tugaganini belgilaydi — ertaga avtomatik qayta tiklanadi."""
-    global _gemini_exhausted_date
-    _gemini_exhausted_date = date.today().isoformat()
-    logger.warning("Gemini kunlik limiti tugadi — Groq'ga o'tildi.")
-
+# ---------- AI YADROSI (Gemini -> Groq, rasm, ovoz) ----------
+ai = AICore(
+    groq_api_key=GROQ_API_KEY,
+    gemini_api_key=GEMINI_API_KEY,
+    model=MODEL,
+    gemini_model=GEMINI_MODEL,
+    gemini_base_url=GEMINI_BASE_URL,
+    cf_account_id=CLOUDFLARE_ACCOUNT_ID,
+    cf_api_token=CLOUDFLARE_API_TOKEN,
+    cf_image_model=CF_IMAGE_MODEL,
+    system_prompt=SYSTEM_PROMPT,
+)
 
 # Har bir foydalanuvchi uchun alohida suhbat tarixi (xotirada saqlanadi)
 user_histories: dict[int, list[dict]] = defaultdict(list)
@@ -221,6 +210,7 @@ def get_stats() -> str:
     return "\n".join(lines)
 
 
+# ---------- OBUNA TEKSHIRUVI ----------
 def subscribe_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📢 Kanalga o'tish", url=CHANNEL_URL)],
@@ -234,8 +224,7 @@ async def is_subscribed(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> boo
         return member.status in ("member", "administrator", "creator")
     except Exception as e:
         logger.error(f"Obunani tekshirishda xatolik: {e}")
-        # Xatolik bo'lsa (masalan bot admin emas), foydalanuvchini bloklamaymiz
-        return True
+        return True  # xatolik bo'lsa, foydalanuvchini bloklamaymiz
 
 
 async def send_subscribe_prompt(update: Update):
@@ -261,12 +250,13 @@ async def check_subscription_callback(update: Update, context: ContextTypes.DEFA
         await query.answer("Siz hali kanalga obuna bo'lmagansiz. ❌", show_alert=True)
 
 
+# ---------- ASOSIY BUYRUQLAR ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_subscribed(context, update.effective_user.id):
         await send_subscribe_prompt(update)
         return
 
-    await update.message.reply_text(
+    text = (
         "Assalomu alaykum! 👋\n"
         "Men sizning AI yordamchingizman. Menga istalgan savolingizni yozing.\n\n"
         "🎤 Ovozli xabar yuborishingiz ham mumkin\n"
@@ -274,6 +264,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎨 /rasm <tavsif> — rasm chizib beraman\n"
         "/reset — suhbatni tozalash uchun."
     )
+
+    if MINI_APP_URL:
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("✨ To'liq ilovada ochish", web_app=WebAppInfo(url=MINI_APP_URL))]
+        ])
+        await update.message.reply_text(text, reply_markup=keyboard)
+    else:
+        await update.message.reply_text(text)
 
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -284,102 +282,42 @@ async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
-        return  # admin bo'lmagan foydalanuvchiga hech narsa demaymiz
+        return
     await update.message.reply_text(get_stats())
 
 
-MIN_EDIT_INTERVAL = 0.12  # ikkita tahrirlash orasidagi eng kam vaqt (flood limitdan saqlanish uchun)
-CHAR_STEP = 15  # shuncha yangi belgi to'planganda darhol yangilaymiz
-TYPING_CURSOR = " ▌"  # "yozilyapti" effekti uchun kursor belgisi
-
-THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
-
-
-def strip_thinking(raw: str) -> str:
-    """Modelning ichki 'fikrlash' (<think>...</think>) qismini foydalanuvchiga ko'rsatmaslik uchun olib tashlaydi."""
-    cleaned = THINK_RE.sub("", raw)
-    # Agar hali yopilmagan <think> tegi bo'lsa (stream davom etayotganda), o'sha joygacha kesib tashlaymiz
-    idx = cleaned.find("<think>")
-    if idx != -1:
-        cleaned = cleaned[:idx]
-    return cleaned.strip()
-
-
-def _build_providers() -> list[tuple]:
-    """Sinab ko'riladigan provayderlar ro'yxati: (client, model, qo'shimcha_parametrlar, nomi)."""
-    providers = []
-    if gemini_is_available():
-        providers.append((gemini_client, GEMINI_MODEL, {}, "gemini"))
-    providers.append((groq_client, MODEL, {"reasoning_effort": "none"}, "groq"))
-    return providers
+# ---------- STREAMING JAVOB (Telegram xabarini tahrirlab boradi) ----------
+MIN_EDIT_INTERVAL = 0.12
+CHAR_STEP = 15
+TYPING_CURSOR = " ▌"
 
 
 async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE, messages: list[dict]) -> str:
-    """Messages ro'yxatini AI'ga yuboradi (avval Gemini, limit tugasa Groq) va javobni bosqichma-bosqich ko'rsatadi."""
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-
-    # Bo'sh xabar bilan boshlaymiz, keyin uni tahrirlab boramiz
     sent_message = await update.effective_message.reply_text("⏳")
 
-    full_text = ""
-    providers = _build_providers()
+    state = {"last_edit_time": 0.0, "last_edit_len": 0}
 
-    for client, model, extra_kwargs, provider_name in providers:
-        raw_text = ""
-        last_edit_time = 0.0
-        last_edit_len = 0
-        try:
-            stream = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=0.7,
-                max_tokens=800,
-                stream=True,
-                **extra_kwargs,
-            )
+    async def on_chunk(display_text: str):
+        now = time.monotonic()
+        enough_time = (now - state["last_edit_time"]) >= MIN_EDIT_INTERVAL
+        enough_chars = (len(display_text) - state["last_edit_len"]) >= CHAR_STEP
+        if enough_time and enough_chars:
+            state["last_edit_time"] = now
+            state["last_edit_len"] = len(display_text)
+            try:
+                await sent_message.edit_text(display_text + TYPING_CURSOR)
+            except BadRequest:
+                pass
 
-            for chunk in stream:
-                delta = chunk.choices[0].delta.content or ""
-                if not delta:
-                    continue
-                raw_text += delta
-                display_text = strip_thinking(raw_text)
+    async def on_total_failure(provider_name: str, error: Exception):
+        await notify_admin(
+            context,
+            f"🚨 Barcha AI provayderlar ishlamayapti!\n\nOxirgi xatolik ({provider_name}): {error}",
+        )
 
-                now = time.monotonic()
-                enough_time_passed = (now - last_edit_time) >= MIN_EDIT_INTERVAL
-                enough_new_chars = (len(display_text) - last_edit_len) >= CHAR_STEP
+    full_text, _ = await ai.stream_reply(messages, on_chunk=on_chunk, on_total_failure=on_total_failure)
 
-                if enough_time_passed and enough_new_chars and display_text:
-                    last_edit_time = now
-                    last_edit_len = len(display_text)
-                    try:
-                        await sent_message.edit_text(display_text + TYPING_CURSOR)
-                    except BadRequest:
-                        pass  # matn o'zgarmagan bo'lsa yoki flood bo'lsa, e'tiborsiz qoldiramiz
-
-            full_text = strip_thinking(raw_text)
-            if not full_text:
-                raise RuntimeError("Bo'sh javob qaytdi")
-
-            logger.info(f"✅ Javob '{provider_name}' orqali berildi.")
-            break  # muvaffaqiyatli — boshqa provayderni sinashning hojati yo'q
-
-        except Exception as e:
-            error_text = str(e).lower()
-
-            if provider_name == "gemini":
-                # Har qanday sababdan (limit, model xatosi va h.k.) Gemini ishlamasa,
-                # bugungi kun uchun uni chetlab, to'g'ridan-to'g'ri Groq'ga o'tamiz
-                mark_gemini_exhausted()
-                logger.info(f"Gemini ishlamadi ({e}), Groq'ga o'tilyapti...")
-                continue  # keyingi provayderni (Groq) sinaymiz
-
-            logger.error(f"{provider_name} xatosi: {e}")
-            if provider_name == providers[-1][3]:  # bu oxirgi (so'nggi) provayder edi
-                full_text = "Kechirasiz, hozir javob bera olmadim. Birozdan so'ng qayta urinib ko'ring. 🙏"
-            # aks holda keyingi provayderga o'tamiz
-
-    # Yakuniy to'liq matnni (kursorsiz) yuboramiz
     try:
         await sent_message.edit_text(full_text)
     except BadRequest:
@@ -389,12 +327,11 @@ async def _stream_to_telegram(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, user_text: str):
-    """Matnli xabar uchun: suhbat tarixini hisobga olib javob beradi."""
     record_message(user_id, update.effective_user.username)
 
     history = user_histories[user_id]
     history.append({"role": "user", "content": user_text})
-    history[:] = history[-MAX_HISTORY:]  # tarixni cheklab turamiz
+    history[:] = history[-MAX_HISTORY:]
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}] + history
     full_text = await _stream_to_telegram(update, context, messages)
@@ -404,17 +341,14 @@ async def stream_ai_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, us
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if not await is_subscribed(context, user_id):
         await send_subscribe_prompt(update)
         return
-
     await stream_ai_reply(update, context, user_id, update.message.text)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if not await is_subscribed(context, user_id):
         await send_subscribe_prompt(update)
         return
@@ -423,39 +357,25 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     voice = update.message.voice or update.message.audio
     tg_file = await context.bot.get_file(voice.file_id)
-
     ogg_path = f"/tmp/voice_{user_id}_{int(time.time())}.ogg"
     await tg_file.download_to_drive(ogg_path)
 
     try:
-        first_name = update.effective_user.first_name or ""
-        hint_prompt = "Bu o'zbek tilidagi ovozli xabar."
-        if first_name:
-            hint_prompt += f" Gapiruvchining ismi: {first_name}."
-
         with open(ogg_path, "rb") as f:
-            transcript = groq_client.audio.transcriptions.create(
-                file=(os.path.basename(ogg_path), f.read()),
-                model="whisper-large-v3",
-                language="uz",
-                prompt=hint_prompt,
-                temperature=0,
-            )
-        recognized_text = transcript.text.strip()
+            file_bytes = f.read()
+        recognized_text = ai.transcribe_audio(
+            file_bytes, os.path.basename(ogg_path), update.effective_user.first_name or ""
+        )
     except Exception as e:
         logger.error(f"Whisper xatosi: {e}")
-        await update.message.reply_text(
-            "Kechirasiz, ovozli xabarni tushuna olmadim. Matn bilan yozib ko'ring. 🙏"
-        )
+        await update.message.reply_text("Kechirasiz, ovozli xabarni tushuna olmadim. Matn bilan yozib ko'ring. 🙏")
         return
     finally:
         if os.path.exists(ogg_path):
             os.remove(ogg_path)
 
     if not recognized_text:
-        await update.message.reply_text(
-            "Ovozli xabarni tushuna olmadim, iltimos qayta urinib ko'ring yoki matn yozing. 🙏"
-        )
+        await update.message.reply_text("Ovozli xabarni tushuna olmadim, iltimos qayta urinib ko'ring yoki matn yozing. 🙏")
         return
 
     await stream_ai_reply(update, context, user_id, recognized_text)
@@ -463,17 +383,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if not await is_subscribed(context, user_id):
         await send_subscribe_prompt(update)
         return
 
     record_message(user_id, update.effective_user.username)
 
-    # Eng yuqori sifatli nusxasini olamiz
     photo = update.message.photo[-1]
     tg_file = await context.bot.get_file(photo.file_id)
-    image_url = tg_file.file_path  # Telegram to'liq havolani qaytaradi
+    image_url = tg_file.file_path
 
     caption = (update.message.caption or "").strip()
     question = caption if caption else "Bu rasmda nima ko'rsatilgan? Batafsil, o'zbek tilida tushuntirib ber."
@@ -491,7 +409,6 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     full_text = await _stream_to_telegram(update, context, messages)
 
-    # Suhbat tarixiga qisqacha yozuv sifatida qo'shamiz (rasmning o'zini emas)
     history = user_histories[user_id]
     history.append({"role": "user", "content": f"[Rasm yubordi] {question}"})
     history.append({"role": "assistant", "content": full_text})
@@ -499,49 +416,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_history(user_id)
 
 
-IMAGE_GEN_TIMEOUT = 60.0  # Cloudflare Workers AI odatda tez ishlaydi
-
-
-def enhance_image_prompt(user_prompt: str) -> str:
-    """Foydalanuvchining (o'zbekcha) qisqa tavsifini AI orqali batafsil, aniq inglizcha
-    rasm-generatsiya promptiga aylantiradi. Xatolik bo'lsa, asl matnni qaytaradi."""
-    try:
-        response = groq_client.chat.completions.create(
-            model=MODEL,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You convert short user requests (possibly in Uzbek) into a single, "
-                        "detailed English prompt for an AI image generator.\n\n"
-                        "STRICT RULES:\n"
-                        "- Keep EXACTLY the subjects and scene the user described — do not add "
-                        "new objects, characters, props, or scene elements that weren't mentioned "
-                        "or clearly implied.\n"
-                        "- You may ONLY add: art style, lighting, color mood, camera framing, and "
-                        "quality descriptors (e.g. 'high detail', 'soft lighting', 'digital art').\n"
-                        "- Do not reinterpret or embellish the scene creatively — stay literal.\n"
-                        "- Respond with ONLY the final English prompt, nothing else — "
-                        "no explanations, no quotes, no extra text."
-                    ),
-                },
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=0.8,
-            max_tokens=200,
-            reasoning_effort="none",
-        )
-        enhanced = response.choices[0].message.content or ""
-        enhanced = strip_thinking(enhanced).strip()
-        return enhanced if enhanced else user_prompt
-    except Exception as e:
-        logger.error(f"Promptni yaxshilashda xatolik: {e}")
-        return user_prompt
-
-
 async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-
     if not await is_subscribed(context, user_id):
         await send_subscribe_prompt(update)
         return
@@ -549,8 +425,7 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     prompt = " ".join(context.args).strip() if context.args else ""
     if not prompt:
         await update.message.reply_text(
-            "🎨 Rasm yaratish uchun tavsif yozing.\n\n"
-            "Masalan: /rasm qor bosgan tog'lar orasidagi kichik uy"
+            "🎨 Rasm yaratish uchun tavsif yozing.\n\nMasalan: /rasm qor bosgan tog'lar orasidagi kichik uy"
         )
         return
 
@@ -559,54 +434,61 @@ async def generate_image(update: Update, context: ContextTypes.DEFAULT_TYPE):
     status_message = await update.message.reply_text("🎨 Rasm chizilmoqda, biroz kuting...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="upload_photo")
 
-    enhanced_prompt = enhance_image_prompt(prompt)
-    cf_url = f"https://api.cloudflare.com/client/v4/accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CF_IMAGE_MODEL}"
-
     try:
-        async with httpx.AsyncClient(timeout=IMAGE_GEN_TIMEOUT) as client:
-            response = await client.post(
-                cf_url,
-                headers={"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"},
-                json={"prompt": enhanced_prompt, "steps": 8},
-            )
-            response.raise_for_status()
-            data = response.json()
-
-        if not data.get("success"):
-            raise RuntimeError(f"Cloudflare xatosi: {data.get('errors')}")
-
-        image_bytes = base64.b64decode(data["result"]["image"])
-
+        image_bytes = await ai.generate_image_bytes(prompt)
         await context.bot.send_photo(
             chat_id=update.effective_chat.id,
             photo=BytesIO(image_bytes),
             caption=f"🎨 {prompt}",
         )
         await status_message.delete()
-
     except Exception as e:
         logger.error(f"Rasm yaratishda xatolik: {e}")
+        await notify_admin(context, f"🚨 Rasm yaratishda xatolik (Cloudflare)!\n\n{e}")
         try:
-            await status_message.edit_text(
-                "Kechirasiz, rasm yaratib bo'lmadi. Birozdan so'ng qayta urinib ko'ring. 🙏"
-            )
+            await status_message.edit_text("Kechirasiz, rasm yaratib bo'lmadi. Birozdan so'ng qayta urinib ko'ring. 🙏")
         except BadRequest:
             pass
 
 
-async def setup_commands(app):
-    """Telegram'ning '/' menyusida ko'rinadigan buyruqlar ro'yxatini sozlaydi."""
+# ---------- ADMIN VA XATOLIKLAR ----------
+async def notify_admin(context: ContextTypes.DEFAULT_TYPE, text: str):
+    try:
+        await context.bot.send_message(chat_id=ADMIN_ID, text=text[:4000])
+    except Exception as e:
+        logger.error(f"Admin'ga xabar yuborib bo'lmadi: {e}")
+
+
+async def global_error_handler(update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error("Kutilmagan xatolik yuz berdi:", exc_info=context.error)
+    error_text = f"⚠️ Botda xatolik!\n\n{type(context.error).__name__}: {context.error}"
+    if isinstance(update, Update) and update.effective_user:
+        u = update.effective_user
+        error_text += f"\n\n👤 Foydalanuvchi: {u.id} (@{u.username or 'username yoq'})"
+    await notify_admin(context, error_text)
+
+
+async def setup_commands_and_menu(app):
+    """Buyruqlar ro'yxatini va (agar mavjud bo'lsa) Mini App tugmasini sozlaydi."""
     await app.bot.set_my_commands([
         BotCommand("start", "Botni ishga tushirish"),
         BotCommand("reset", "Suhbat tarixini tozalash"),
         BotCommand("rasm", "AI orqali rasm chizish"),
     ])
+    if MINI_APP_URL:
+        await app.bot.set_chat_menu_button(
+            menu_button=MenuButtonWebApp(text="Uzbek AI", web_app=WebAppInfo(url=MINI_APP_URL))
+        )
+        logger.info(f"Mini App menyu tugmasi sozlandi: {MINI_APP_URL}")
+    else:
+        logger.info("MINI_APP_URL sozlanmagan — Mini App tugmasi ko'rsatilmaydi.")
 
 
-def main():
+def build_application():
+    """Telegram Application obyektini yaratadi va handlerlarni ro'yxatga oladi."""
     init_db()
     load_all_histories()
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(setup_commands).build()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(setup_commands_and_menu).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("reset", reset))
@@ -616,7 +498,12 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_error_handler(global_error_handler)
+    return app
 
+
+def main():
+    app = build_application()
     logger.info("Bot ishga tushdi...")
     app.run_polling()
 
