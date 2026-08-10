@@ -1,4 +1,3 @@
-
 <!DOCTYPE html>
 <html lang="uz">
 <head>
@@ -103,6 +102,24 @@
     );
     opacity: 0.55;
     border-radius: 2px;
+  }
+
+  .link-banner {
+    display: flex;
+    gap: 8px;
+    padding: 12px 16px 4px;
+    flex-wrap: wrap;
+  }
+  .link-chip {
+    text-decoration: none;
+    font-size: 12.5px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--surface);
+    border: 1px solid rgba(255,255,255,0.08);
+    padding: 7px 13px;
+    border-radius: 999px;
+    white-space: nowrap;
   }
 
   /* ---------- Messages ---------- */
@@ -354,6 +371,8 @@
 
 <script>
 const tg = window.Telegram?.WebApp;
+const isTelegram = !!(tg && tg.initData);
+
 if (tg) {
   tg.ready();
   tg.expand();
@@ -362,6 +381,18 @@ if (tg) {
 }
 
 const initData = tg?.initData || '';
+
+// Anonim (Telegram'siz) veb-tashrifchilar uchun brauzerda saqlanadigan sessiya ID
+function getWebSessionId() {
+  let id = localStorage.getItem('uzbek_ai_session');
+  if (!id) {
+    id = crypto.randomUUID();
+    localStorage.setItem('uzbek_ai_session', id);
+  }
+  return id;
+}
+const webSessionId = isTelegram ? null : getWebSessionId();
+
 const messagesEl = document.getElementById('messages');
 const textInput = document.getElementById('text-input');
 const sendBtn = document.getElementById('send-btn');
@@ -374,6 +405,7 @@ let isBusy = false;
 let mediaRecorder = null;
 let audioChunks = [];
 let sessionChannelUrl = '';
+let sessionBotUrl = '';
 
 function escapeHtml(s) {
   const d = document.createElement('div');
@@ -496,11 +528,16 @@ async function requestChat(text) {
   const bubble = addTypingBubble();
   let firstChunk = true;
 
+  const endpoint = isTelegram ? '/api/chat' : '/api/web/chat';
+  const payload = isTelegram
+    ? { init_data: initData, message: text }
+    : { session_id: webSessionId, message: text };
+
   try {
-    const resp = await fetch('/api/chat', {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ init_data: initData, message: text }),
+      body: JSON.stringify(payload),
     });
 
     if (resp.status === 403) {
@@ -550,11 +587,16 @@ async function requestImage(prompt) {
   const bubble = addTypingBubble();
   bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span> Rasm chizilmoqda...';
 
+  const endpoint = isTelegram ? '/api/image' : '/api/web/image';
+  const payload = isTelegram
+    ? { init_data: initData, prompt }
+    : { session_id: webSessionId, prompt };
+
   try {
-    const resp = await fetch('/api/image', {
+    const resp = await fetch(endpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ init_data: initData, prompt }),
+      body: JSON.stringify(payload),
     });
 
     if (resp.status === 403) {
@@ -617,12 +659,18 @@ async function onRecordingStop() {
   const bubble = addTypingBubble();
   bubble.innerHTML = '<span class="typing-dots"><span></span><span></span><span></span></span> Ovoz tinglanmoqda...';
 
+  const endpoint = isTelegram ? '/api/voice' : '/api/web/voice';
+
   try {
     const formData = new FormData();
-    formData.append('init_data', initData);
+    if (isTelegram) {
+      formData.append('init_data', initData);
+    } else {
+      formData.append('session_id', webSessionId);
+    }
     formData.append('audio', audioBlob, 'voice.webm');
 
-    const resp = await fetch('/api/voice', { method: 'POST', body: formData });
+    const resp = await fetch(endpoint, { method: 'POST', body: formData });
     const data = await resp.json();
 
     if (resp.status === 403) {
@@ -647,15 +695,33 @@ async function onRecordingStop() {
 }
 
 // ---------- Ishga tushirish ----------
+function renderLinkBanner() {
+  const banner = document.createElement('div');
+  banner.className = 'link-banner';
+  banner.innerHTML = `
+    <a href="${sessionChannelUrl}" target="_blank" class="link-chip">📢 Telegram kanalimiz</a>
+    <a href="${sessionBotUrl}" target="_blank" class="link-chip">🤖 Botni Telegramda ochish</a>
+  `;
+  messagesEl.parentElement.insertBefore(banner, messagesEl);
+}
+
 async function init() {
-  if (!initData) {
-    messagesEl.innerHTML = '';
+  if (!isTelegram) {
+    // Anonim (Telegram'siz) veb-tashrifchi — obuna talab qilinmaydi, lekin havolalar ko'rsatiladi
+    try {
+      const infoResp = await fetch('/api/web/info');
+      const info = await infoResp.json();
+      sessionChannelUrl = info.channel_url || '';
+      sessionBotUrl = info.bot_url || '';
+      renderLinkBanner();
+    } catch (err) { /* havolalar yuklanmasa ham, chat ishlashda davom etadi */ }
+
     const empty = document.createElement('div');
     empty.className = 'empty-state';
     empty.innerHTML = `
       <div class="logo-mark"><svg viewBox="0 0 24 24" fill="none"><path d="M12 3L13.8 9.2L20 11L13.8 12.8L12 19L10.2 12.8L4 11L10.2 9.2L12 3Z" fill="#06231f"/></svg></div>
-      <h2>Uzbek AI</h2>
-      <p>Bu ilova faqat Telegram ichida ishlaydi. Iltimos, botni Telegram orqali oching.</p>
+      <h2>Assalomu alaykum!</h2>
+      <p>Menga istalgan savolingizni yozing, ovozli xabar yuboring yoki rasm chizdiring 🎨</p>
     `;
     messagesEl.appendChild(empty);
     return;
