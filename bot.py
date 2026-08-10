@@ -490,14 +490,14 @@ def build_application():
     load_all_histories()
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).post_init(setup_commands_and_menu).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("reset", reset))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("rasm", generate_image))
+    app.add_handler(CommandHandler("start", start, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("reset", reset, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("stats", stats, filters=filters.ChatType.PRIVATE))
+    app.add_handler(CommandHandler("rasm", generate_image, filters=filters.ChatType.PRIVATE))
     app.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_sub$"))
-    app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & (filters.VOICE | filters.AUDIO), handle_voice))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_error_handler(global_error_handler)
     return app
 
