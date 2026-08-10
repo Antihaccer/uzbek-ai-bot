@@ -25,6 +25,10 @@ logger = logging.getLogger(__name__)
 STATIC_DIR = Path(__file__).parent / "static"
 _bot_instance: Bot | None = None
 
+# Anonim (Telegram'siz) veb-tashrifchilar uchun alohida, vaqtinchalik (faqat xotirada) suhbat tarixi
+web_histories: dict[str, list[dict]] = {}
+MAX_WEB_SESSIONS = 2000  # xotira toshib ketmasligi uchun eng ko'p sessiyalar soni
+
 
 def get_bot() -> Bot:
     global _bot_instance
@@ -130,7 +134,10 @@ def create_web_app() -> FastAPI:
         history[:] = history[-bot_module.MAX_HISTORY:]
         messages = [{"role": "system", "content": bot_module.SYSTEM_PROMPT}] + history
 
-        return StreamingResponse(_sse_stream(messages, user_id), media_type="text/event-stream")
+        def on_done(_full_text):
+            bot_module.save_history(user_id)
+
+        return StreamingResponse(_sse_stream(messages, history, on_done=on_done), media_type="text/event-stream")
 
     @app.post("/api/voice")
     async def voice(request: Request):
@@ -183,11 +190,79 @@ def create_web_app() -> FastAPI:
         image_b64 = base64.b64encode(image_bytes).decode()
         return JSONResponse({"image_base64": image_b64, "mime": "image/jpeg"})
 
+    # ---------- Anonim veb-tashrifchilar uchun (Telegram'siz, ochiq sayt) ----------
+    @app.get("/api/web/info")
+    async def web_info():
+        """Sayt uchun statik ma'lumot: kanal va bot havolalari."""
+        return JSONResponse({
+            "channel_url": bot_module.CHANNEL_URL,
+            "bot_url": f"https://t.me/{(await get_bot().get_me()).username}",
+        })
+
+    def _get_web_history(session_id: str) -> list[dict]:
+        if session_id not in web_histories:
+            if len(web_histories) >= MAX_WEB_SESSIONS:
+                # eng eski sessiyani chiqarib tashlaymiz (oddiy FIFO)
+                oldest = next(iter(web_histories))
+                web_histories.pop(oldest, None)
+            web_histories[session_id] = []
+        return web_histories[session_id]
+
+    @app.post("/api/web/chat")
+    async def web_chat(request: Request):
+        body = await request.json()
+        session_id = (body.get("session_id") or "").strip()
+        user_text = (body.get("message") or "").strip()
+        if not session_id or not user_text:
+            return JSONResponse({"error": "bad_request"}, status_code=400)
+
+        history = _get_web_history(session_id)
+        history.append({"role": "user", "content": user_text})
+        history[:] = history[-bot_module.MAX_HISTORY:]
+        messages = [{"role": "system", "content": bot_module.SYSTEM_PROMPT}] + history
+
+        return StreamingResponse(_sse_stream(messages, history), media_type="text/event-stream")
+
+    @app.post("/api/web/voice")
+    async def web_voice(request: Request):
+        form = await request.form()
+        session_id = (form.get("session_id") or "").strip()
+        audio_file = form.get("audio")
+        if not session_id or audio_file is None:
+            return JSONResponse({"error": "bad_request"}, status_code=400)
+
+        file_bytes = await audio_file.read()
+        try:
+            text = bot_module.ai.transcribe_audio(file_bytes, "voice.webm")
+        except Exception as e:
+            logger.error(f"Whisper xatosi (anonim veb): {e}")
+            return JSONResponse({"error": "transcription_failed"}, status_code=500)
+
+        return JSONResponse({"transcript": text})
+
+    @app.post("/api/web/image")
+    async def web_image(request: Request):
+        body = await request.json()
+        session_id = (body.get("session_id") or "").strip()
+        prompt = (body.get("prompt") or "").strip()
+        if not session_id or not prompt:
+            return JSONResponse({"error": "bad_request"}, status_code=400)
+
+        try:
+            image_bytes = await bot_module.ai.generate_image_bytes(prompt)
+        except Exception as e:
+            logger.error(f"Rasm yaratishda xatolik (anonim veb): {e}")
+            return JSONResponse({"error": "image_generation_failed"}, status_code=500)
+
+        image_b64 = base64.b64encode(image_bytes).decode()
+        return JSONResponse({"image_base64": image_b64, "mime": "image/jpeg"})
+
     return app
 
 
-async def _sse_stream(messages: list[dict], user_id: int):
-    """AI javobini SSE (Server-Sent Events) formatida oqim sifatida yuboradi."""
+async def _sse_stream(messages: list[dict], history: list[dict], on_done=None):
+    """AI javobini SSE (Server-Sent Events) formatida oqim sifatida yuboradi.
+    on_done(full_text) — javob tugagach chaqiriladi (masalan bazaga saqlash uchun)."""
     import asyncio
 
     queue: asyncio.Queue = asyncio.Queue()
@@ -200,9 +275,9 @@ async def _sse_stream(messages: list[dict], user_id: int):
 
     async def run():
         full_text, _ = await bot_module.ai.stream_reply(messages, on_chunk=on_chunk, on_total_failure=on_total_failure)
-        history = bot_module.user_histories[user_id]
         history.append({"role": "assistant", "content": full_text})
-        bot_module.save_history(user_id)
+        if on_done:
+            on_done(full_text)
         await queue.put(("done", full_text))
 
     task = asyncio.create_task(run())
