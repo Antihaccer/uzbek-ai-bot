@@ -14,7 +14,7 @@ from pathlib import Path
 from urllib.parse import parse_qsl
 
 from fastapi import FastAPI, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from telegram import Bot
 
@@ -87,6 +87,30 @@ def create_web_app() -> FastAPI:
 
     if (STATIC_DIR / "assets").exists():
         app.mount("/assets", StaticFiles(directory=STATIC_DIR / "assets"), name="assets")
+
+    @app.get("/robots.txt")
+    async def robots(request: Request):
+        base = str(request.base_url).rstrip("/")
+        content = (
+            "User-agent: *\n"
+            "Allow: /\n"
+            "Disallow: /api/\n\n"
+            f"Sitemap: {base}/sitemap.xml\n"
+        )
+        return PlainTextResponse(content)
+
+    @app.get("/sitemap.xml")
+    async def sitemap(request: Request):
+        base = str(request.base_url).rstrip("/")
+        content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url>
+    <loc>{base}/</loc>
+    <changefreq>weekly</changefreq>
+    <priority>1.0</priority>
+  </url>
+</urlset>"""
+        return Response(content=content, media_type="application/xml")
 
     @app.post("/api/session")
     async def session(request: Request):
